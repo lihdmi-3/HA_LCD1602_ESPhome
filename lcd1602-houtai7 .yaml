@@ -1,0 +1,1330 @@
+esphome:
+  name: lcd1602
+  friendly_name: LCD1602 Display
+  on_boot:
+    priority: 600
+    then:
+      - lambda: |-
+          id(restart_count) += 1;
+          // 开机默认打开背光（D4/GPIO2）
+          id(backlight_pin).turn_on();
+          id(backlight_state) = true;
+          // 新增：重置 last_merged_uptime
+          id(last_merged_uptime) = 0.0;
+
+esp8266:
+  board: d1_mini
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "LCD1602-Fallback"
+    password: "12345678"
+
+logger:
+  baud_rate: 0
+
+api:
+# OTA列表格式（旧版本必填）
+ota:
+  - platform: esphome
+
+web_server:
+  port: 80
+
+# 全局变量：每行的实体选择索引（对应下拉菜单选项）
+globals:
+  - id: display_page
+    type: int
+    initial_value: '0'
+  - id: switch_timer
+    type: int
+    initial_value: '0'
+  - id: switch_seconds
+    type: int
+    restore_value: true
+    initial_value: '30'
+  - id: fixed_page
+    type: int
+    restore_value: true
+    initial_value: '-1'
+  # 新增：刷新时间索引（对应下拉菜单）
+  - id: refresh_interval_selected
+    type: int
+    restore_value: true
+    initial_value: '2' # 默认1秒
+  
+  # 5个可配置行的选择索引（0-22对应所有实体）
+  - id: p0l0_selected
+    type: int
+    restore_value: true
+    initial_value: '0'
+  - id: p0l1_selected
+    type: int
+    restore_value: true
+    initial_value: '1'
+  - id: p1l0_selected
+    type: int
+    restore_value: true
+    initial_value: '12'
+  - id: p1l1_selected
+    type: int
+    restore_value: true
+    initial_value: '10'
+  - id: p2l0_selected
+    type: int
+    restore_value: true
+    initial_value: '2'
+  - id: p2l1_selected
+    type: int
+    restore_value: true
+    initial_value: '9'
+  - id: p3l0_selected
+    type: int
+    restore_value: true
+    initial_value: '16'
+  - id: p3l1_selected
+    type: int
+    restore_value: true
+    initial_value: '17'
+  - id: p4l0_selected
+    type: int
+    restore_value: true
+    initial_value: '19'
+  - id: p4l1_selected
+    type: int
+    restore_value: true
+    initial_value: '20'
+  
+  - id: restart_count
+    type: int
+    restore_value: true
+    initial_value: '0'
+  # 新增：背光状态
+  - id: backlight_state
+    type: bool
+    restore_value: true
+    initial_value: 'true'
+
+  # 新增：总运行时间累计基数（秒）
+  - id: total_uptime_base
+    type: float
+    restore_value: true
+    initial_value: '0.0'
+  # 新增：上次合并时的 uptime 秒数（不保存，启动时重置）
+  - id: last_merged_uptime
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+
+# 新增：背光GPIO定义 - 修改为D4（GPIO2）
+output:
+  - platform: gpio
+    pin: GPIO2 # D4，PCF8574T背光控制端口
+    id: backlight_pin
+    inverted: false # 如果背光低电平点亮，改为true
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+i2c:
+  sda: GPIO4 # D2 - PCF8574T SDA
+  scl: GPIO5 # D1 - PCF8574T SCL
+  scan: True
+
+sensor:
+  # 系统运行时间（秒）
+  - platform: uptime
+    id: uptime_sec
+    update_interval: 60s
+
+  # 格式化运行时间（小时）
+  - platform: template
+    name: "LCD Device Uptime"
+    id: uptime_human
+    unit_of_measurement: "h"
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      float uptime_hours = id(uptime_sec).state / 3600.0;
+      return uptime_hours;
+
+  # WiFi信号
+  - platform: wifi_signal
+    id: wifi_rssi
+    name: "LCD WiFi RSSI"
+    update_interval: 10s
+
+  # WiFi质量百分比
+  - platform: template
+    name: "LCD WiFi Quality"
+    id: wifi_quality
+    unit_of_measurement: "%"
+    update_interval: 10s
+    lambda: |-
+      int rssi = id(wifi_rssi).state;
+      return (rssi <= -100) ? 0 : (rssi >= -50) ? 100 : 2 * (rssi + 100);
+
+  # 剩余内存
+  - platform: template
+    name: "LCD Free Memory"
+    id: free_memory
+    unit_of_measurement: "KB"
+    update_interval: 30s
+    lambda: |-
+      return ESP.getFreeHeap() / 1024.0;
+
+  # 内存占用百分比
+  - platform: template
+    name: "LCD Memory Usage"
+    id: memory_usage
+    unit_of_measurement: "%"
+    update_interval: 30s
+    lambda: |-
+      float free = id(free_memory).state;
+      float total = 80.0;
+      return 100.0 - (free / total) * 100.0;
+
+  # 重启次数
+  - platform: template
+    name: "LCD Restart Count"
+    id: restart_count_sensor
+    unit_of_measurement: "次"
+    state_class: total_increasing
+    update_interval: 60s
+    lambda: |-
+      return id(restart_count);
+
+  # 新增：总运行时间（秒）
+  - platform: template
+    name: "LCD Total Uptime (seconds)"
+    id: total_uptime_sec
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      return id(total_uptime_base) + (id(uptime_sec).state - id(last_merged_uptime));
+
+  # 新增：总运行时间（小时）
+  - platform: template
+    name: "LCD Total Uptime"
+    id: total_uptime_human
+    unit_of_measurement: "h"
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      float total_sec = id(total_uptime_base) + (id(uptime_sec).state - id(last_merged_uptime));
+      return total_sec / 3600.0;
+
+  # HA实体 - 原有
+  - platform: homeassistant
+    id: elec_today
+    entity_id: sensor.tasmota_energy_today
+
+  - platform: homeassistant
+    id: gas_today
+    entity_id: sensor.jin_ri_ran_qi_liang
+
+  - platform: homeassistant
+    id: power_now
+    entity_id: sensor.tasmota_energy_power
+
+  - platform: homeassistant
+    id: pi_uptime
+    entity_id: sensor.raspberrypi_uptime
+
+  - platform: homeassistant
+    id: dns_queries
+    entity_id: sensor.pi_hole_dns_queries_today
+
+  - platform: homeassistant
+    id: dns_blocked
+    entity_id: sensor.pi_hole_ads_blocked_today
+
+  # 新增：拓竹打印机实体
+  - platform: homeassistant
+    id: bambu_remaining_time
+    entity_id: sensor.a1_03900d592302392_remaining_time
+
+  - platform: homeassistant
+    id: bambu_total_usage
+    entity_id: sensor.a1_03900d592302392_total_usage
+
+  - platform: homeassistant
+    id: bambu_print_progress
+    entity_id: sensor.a1_03900d592302392_print_progress
+
+  # 新增：温湿度、甲醛传感器
+  - platform: homeassistant
+    id: temperature
+    entity_id: sensor.xiaomi_cn_696390770_va3_temperature_p_3_7
+
+  - platform: homeassistant
+    id: humidity
+    entity_id: sensor.xiaomi_cn_696390770_va3_relative_humidity_p_3_1
+
+  - platform: homeassistant
+    id: hcho_density
+    entity_id: sensor.xiaomi_cn_696390770_va3_hcho_density_p_3_11
+
+  # 新增：ES6汽车相关
+  - platform: homeassistant
+    id: es6_soc
+    entity_id: sensor.soc
+
+  - platform: homeassistant
+    id: es6_remaining_range
+    entity_id: sensor.remaining_actual_range
+
+  - platform: homeassistant
+    id: es6_mileage
+    entity_id: sensor.mileage
+
+  # 新增：路由器网速
+  - platform: homeassistant
+    id: router_download
+    entity_id: sensor.xiao_ai_yin_xiang_upnp_download_speed
+
+  - platform: homeassistant
+    id: router_upload
+    entity_id: sensor.xiao_ai_yin_xiang_upnp_upload_speed
+
+# =========================
+# 下拉菜单（兼容旧版本set_action+optimistic）
+# =========================
+select:
+  # 新增：刷新时间选择（替代原6个时间按钮）
+  - platform: template
+    name: "LCD Refresh Interval"
+    id: refresh_interval_select
+    icon: mdi:timer-refresh
+    options:
+      - "1秒"
+      - "2秒"
+      - "3秒"
+      - "5秒"
+      - "10秒"
+      - "15秒"
+      - "20秒"
+      - "25秒"
+      - "30秒"
+    initial_option: "1秒"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "1秒") id(switch_seconds) = 1;
+            else if (val == "2秒") id(switch_seconds) = 2;
+            else if (val == "3秒") id(switch_seconds) = 3;
+            else if (val == "5秒") id(switch_seconds) = 5;
+            else if (val == "10秒") id(switch_seconds) = 10;
+            else if (val == "15秒") id(switch_seconds) = 15;
+            else if (val == "20秒") id(switch_seconds) = 20;
+            else if (val == "25秒") id(switch_seconds) = 25;
+            else if (val == "30秒") id(switch_seconds) = 30;
+            id(switch_timer) = 0;  
+            id(lcd_display).update();
+
+  # P0第一行选择
+  - platform: template
+    name: "P0 Line 0"
+    id: p0l0_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "今日电量 (kWh)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p0l0_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p0l0_selected) = 1;
+            else if (val == "当前功率 (W)") id(p0l0_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p0l0_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p0l0_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p0l0_selected) = 5;
+            else if (val == "内存占用 (%)") id(p0l0_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p0l0_selected) = 7;
+            else if (val == "重启次数 (次)") id(p0l0_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p0l0_selected) = 9;
+            else if (val == "DNS查询数") id(p0l0_selected) = 10;
+            else if (val == "DNS拦截数") id(p0l0_selected) = 11;
+            else if (val == "系统时间") id(p0l0_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p0l0_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p0l0_selected) = 14;
+            else if (val == "拓竹打印进度") id(p0l0_selected) = 15;
+            else if (val == "温度 (°C)") id(p0l0_selected) = 16;
+            else if (val == "湿度 (%)") id(p0l0_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p0l0_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p0l0_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p0l0_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p0l0_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p0l0_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p0l0_selected) = 23;
+            id(lcd_display).update();
+
+  # P0第二行选择
+  - platform: template
+    name: "P0 Line 1"
+    id: p0l1_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "今日燃气 (m³)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p0l1_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p0l1_selected) = 1;
+            else if (val == "当前功率 (W)") id(p0l1_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p0l1_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p0l1_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p0l1_selected) = 5;
+            else if (val == "内存占用 (%)") id(p0l1_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p0l1_selected) = 7;
+            else if (val == "重启次数 (次)") id(p0l1_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p0l1_selected) = 9;
+            else if (val == "DNS查询数") id(p0l1_selected) = 10;
+            else if (val == "DNS拦截数") id(p0l1_selected) = 11;
+            else if (val == "系统时间") id(p0l1_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p0l1_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p0l1_selected) = 14;
+            else if (val == "拓竹打印进度") id(p0l1_selected) = 15;
+            else if (val == "温度 (°C)") id(p0l1_selected) = 16;
+            else if (val == "湿度 (%)") id(p0l1_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p0l1_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p0l1_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p0l1_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p0l1_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p0l1_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p0l1_selected) = 23;
+            id(lcd_display).update();
+
+  # P1第一行选择
+  - platform: template
+    name: "P1 Line 0"
+    id: p1l0_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "系统时间"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p1l0_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p1l0_selected) = 1;
+            else if (val == "当前功率 (W)") id(p1l0_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p1l0_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p1l0_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p1l0_selected) = 5;
+            else if (val == "内存占用 (%)") id(p1l0_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p1l0_selected) = 7;
+            else if (val == "重启次数 (次)") id(p1l0_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p1l0_selected) = 9;
+            else if (val == "DNS查询数") id(p1l0_selected) = 10;
+            else if (val == "DNS拦截数") id(p1l0_selected) = 11;
+            else if (val == "系统时间") id(p1l0_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p1l0_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p1l0_selected) = 14;
+            else if (val == "拓竹打印进度") id(p1l0_selected) = 15;
+            else if (val == "温度 (°C)") id(p1l0_selected) = 16;
+            else if (val == "湿度 (%)") id(p1l0_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p1l0_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p1l0_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p1l0_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p1l0_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p1l0_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p1l0_selected) = 23;
+            id(lcd_display).update();
+
+  # P1第二行选择
+  - platform: template
+    name: "P1 Line 1"
+    id: p1l1_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "DNS查询数"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p1l1_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p1l1_selected) = 1;
+            else if (val == "当前功率 (W)") id(p1l1_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p1l1_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p1l1_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p1l1_selected) = 5;
+            else if (val == "内存占用 (%)") id(p1l1_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p1l1_selected) = 7;
+            else if (val == "重启次数 (次)") id(p1l1_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p1l1_selected) = 9;
+            else if (val == "DNS查询数") id(p1l1_selected) = 10;
+            else if (val == "DNS拦截数") id(p1l1_selected) = 11;
+            else if (val == "系统时间") id(p1l1_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p1l1_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p1l1_selected) = 14;
+            else if (val == "拓竹打印进度") id(p1l1_selected) = 15;
+            else if (val == "温度 (°C)") id(p1l1_selected) = 16;
+            else if (val == "湿度 (%)") id(p1l1_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p1l1_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p1l1_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p1l1_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p1l1_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p1l1_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p1l1_selected) = 23;
+            id(lcd_display).update();
+
+  # P2第一行选择
+  - platform: template
+    name: "P2 Line 0"
+    id: p2l0_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "当前功率 (W)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p2l0_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p2l0_selected) = 1;
+            else if (val == "当前功率 (W)") id(p2l0_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p2l0_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p2l0_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p2l0_selected) = 5;
+            else if (val == "内存占用 (%)") id(p2l0_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p2l0_selected) = 7;
+            else if (val == "重启次数 (次)") id(p2l0_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p2l0_selected) = 9;
+            else if (val == "DNS查询数") id(p2l0_selected) = 10;
+            else if (val == "DNS拦截数") id(p2l0_selected) = 11;
+            else if (val == "系统时间") id(p2l0_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p2l0_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p2l0_selected) = 14;
+            else if (val == "拓竹打印进度") id(p2l0_selected) = 15;
+            else if (val == "温度 (°C)") id(p2l0_selected) = 16;
+            else if (val == "湿度 (%)") id(p2l0_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p2l0_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p2l0_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p2l0_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p2l0_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p2l0_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p2l0_selected) = 23;
+            id(lcd_display).update();
+
+  # P2第二行选择
+  - platform: template
+    name: "P2 Line 1"
+    id: p2l1_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "Pi运行时间 (d)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p2l1_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p2l1_selected) = 1;
+            else if (val == "当前功率 (W)") id(p2l1_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p2l1_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p2l1_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p2l1_selected) = 5;
+            else if (val == "内存占用 (%)") id(p2l1_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p2l1_selected) = 7;
+            else if (val == "重启次数 (次)") id(p2l1_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p2l1_selected) = 9;
+            else if (val == "DNS查询数") id(p2l1_selected) = 10;
+            else if (val == "DNS拦截数") id(p2l1_selected) = 11;
+            else if (val == "系统时间") id(p2l1_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p2l1_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p2l1_selected) = 14;
+            else if (val == "拓竹打印进度") id(p2l1_selected) = 15;
+            else if (val == "温度 (°C)") id(p2l1_selected) = 16;
+            else if (val == "湿度 (%)") id(p2l1_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p2l1_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p2l1_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p2l1_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p2l1_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p2l1_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p2l1_selected) = 23;
+            id(lcd_display).update();
+
+  # P3第一行选择
+  - platform: template
+    name: "P3 Line 0"
+    id: p3l0_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "温度 (°C)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p3l0_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p3l0_selected) = 1;
+            else if (val == "当前功率 (W)") id(p3l0_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p3l0_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p3l0_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p3l0_selected) = 5;
+            else if (val == "内存占用 (%)") id(p3l0_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p3l0_selected) = 7;
+            else if (val == "重启次数 (次)") id(p3l0_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p3l0_selected) = 9;
+            else if (val == "DNS查询数") id(p3l0_selected) = 10;
+            else if (val == "DNS拦截数") id(p3l0_selected) = 11;
+            else if (val == "系统时间") id(p3l0_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p3l0_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p3l0_selected) = 14;
+            else if (val == "拓竹打印进度") id(p3l0_selected) = 15;
+            else if (val == "温度 (°C)") id(p3l0_selected) = 16;
+            else if (val == "湿度 (%)") id(p3l0_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p3l0_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p3l0_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p3l0_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p3l0_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p3l0_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p3l0_selected) = 23;
+            id(lcd_display).update();
+
+  # P3第二行选择
+  - platform: template
+    name: "P3 Line 1"
+    id: p3l1_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "湿度 (%)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p3l1_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p3l1_selected) = 1;
+            else if (val == "当前功率 (W)") id(p3l1_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p3l1_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p3l1_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p3l1_selected) = 5;
+            else if (val == "内存占用 (%)") id(p3l1_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p3l1_selected) = 7;
+            else if (val == "重启次数 (次)") id(p3l1_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p3l1_selected) = 9;
+            else if (val == "DNS查询数") id(p3l1_selected) = 10;
+            else if (val == "DNS拦截数") id(p3l1_selected) = 11;
+            else if (val == "系统时间") id(p3l1_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p3l1_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p3l1_selected) = 14;
+            else if (val == "拓竹打印进度") id(p3l1_selected) = 15;
+            else if (val == "温度 (°C)") id(p3l1_selected) = 16;
+            else if (val == "湿度 (%)") id(p3l1_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p3l1_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p3l1_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p3l1_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p3l1_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p3l1_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p3l1_selected) = 23;
+            id(lcd_display).update();
+
+  # P4第一行选择
+  - platform: template
+    name: "P4 Line 0"
+    id: p4l0_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "ES6剩余电量 (%)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p4l0_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p4l0_selected) = 1;
+            else if (val == "当前功率 (W)") id(p4l0_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p4l0_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p4l0_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p4l0_selected) = 5;
+            else if (val == "内存占用 (%)") id(p4l0_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p4l0_selected) = 7;
+            else if (val == "重启次数 (次)") id(p4l0_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p4l0_selected) = 9;
+            else if (val == "DNS查询数") id(p4l0_selected) = 10;
+            else if (val == "DNS拦截数") id(p4l0_selected) = 11;
+            else if (val == "系统时间") id(p4l0_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p4l0_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p4l0_selected) = 14;
+            else if (val == "拓竹打印进度") id(p4l0_selected) = 15;
+            else if (val == "温度 (°C)") id(p4l0_selected) = 16;
+            else if (val == "湿度 (%)") id(p4l0_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p4l0_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p4l0_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p4l0_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p4l0_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p4l0_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p4l0_selected) = 23;
+            id(lcd_display).update();
+
+  # P4第二行选择
+  - platform: template
+    name: "P4 Line 1"
+    id: p4l1_select
+    icon: mdi:format-list-bulleted
+    options:
+      - "今日电量 (kWh)"
+      - "今日燃气 (m³)"
+      - "当前功率 (W)"
+      - "WiFi质量 (%)"
+      - "WiFi信号 (dBm)"
+      - "剩余内存 (KB)"
+      - "内存占用 (%)"
+      - "设备运行时间 (h)"
+      - "重启次数 (次)"
+      - "Pi运行时间 (d)"
+      - "DNS查询数"
+      - "DNS拦截数"
+      - "系统时间"
+      - "拓竹剩余时间"
+      - "拓竹总使用时间"
+      - "拓竹打印进度"
+      - "温度 (°C)"
+      - "湿度 (%)"
+      - "甲醛浓度 (mg/m³)"
+      - "ES6剩余电量 (%)"
+      - "ES6实估续航 (km)"
+      - "ES6累计里程 (km)"
+      - "路由器下载 (kbit/s)"
+      - "路由器上传 (kbit/s)"
+    initial_option: "ES6实估续航 (km)"
+    restore_value: true
+    optimistic: true
+    set_action:
+      then:
+        - lambda: |-
+            std::string val = x;
+            if (val == "今日电量 (kWh)") id(p4l1_selected) = 0;
+            else if (val == "今日燃气 (m³)") id(p4l1_selected) = 1;
+            else if (val == "当前功率 (W)") id(p4l1_selected) = 2;
+            else if (val == "WiFi质量 (%)") id(p4l1_selected) = 3;
+            else if (val == "WiFi信号 (dBm)") id(p4l1_selected) = 4;
+            else if (val == "剩余内存 (KB)") id(p4l1_selected) = 5;
+            else if (val == "内存占用 (%)") id(p4l1_selected) = 6;
+            else if (val == "设备运行时间 (h)") id(p4l1_selected) = 7;
+            else if (val == "重启次数 (次)") id(p4l1_selected) = 8;
+            else if (val == "Pi运行时间 (d)") id(p4l1_selected) = 9;
+            else if (val == "DNS查询数") id(p4l1_selected) = 10;
+            else if (val == "DNS拦截数") id(p4l1_selected) = 11;
+            else if (val == "系统时间") id(p4l1_selected) = 12;
+            else if (val == "拓竹剩余时间") id(p4l1_selected) = 13;
+            else if (val == "拓竹总使用时间") id(p4l1_selected) = 14;
+            else if (val == "拓竹打印进度") id(p4l1_selected) = 15;
+            else if (val == "温度 (°C)") id(p4l1_selected) = 16;
+            else if (val == "湿度 (%)") id(p4l1_selected) = 17;
+            else if (val == "甲醛浓度 (mg/m³)") id(p4l1_selected) = 18;
+            else if (val == "ES6剩余电量 (%)") id(p4l1_selected) = 19;
+            else if (val == "ES6实估续航 (km)") id(p4l1_selected) = 20;
+            else if (val == "ES6累计里程 (km)") id(p4l1_selected) = 21;
+            else if (val == "路由器下载 (kbit/s)") id(p4l1_selected) = 22;
+            else if (val == "路由器上传 (kbit/s)") id(p4l1_selected) = 23;
+            id(lcd_display).update();
+
+# =========================
+# 按钮组件（保留核心功能，移除原时间按钮）
+# =========================
+button:
+  # 自动/固定页面
+  - platform: template
+    name: "LCD Auto Switch Page"
+    icon: mdi:autorenew
+    on_press:
+      then:
+        - lambda: |-
+            id(fixed_page) = -1;
+            id(switch_timer) = 0;
+
+  - platform: template
+    name: "LCD Fixed Page0"
+    icon: mdi:page-first
+    on_press:
+      then:
+        - lambda: |-
+            id(fixed_page) = 0;
+            id(display_page) = 0;
+            id(lcd_display).update();
+
+  - platform: template
+    name: "LCD Fixed Page1"
+    icon: mdi:page-middle
+    on_press:
+      then:
+        - lambda: |-
+            id(fixed_page) = 1;
+            id(display_page) = 1;
+            id(lcd_display).update();
+
+  - platform: template
+    name: "LCD Fixed Page2"
+    icon: mdi:page-last
+    on_press:
+      then:
+        - lambda: |-
+            id(fixed_page) = 2;
+            id(display_page) = 2;
+            id(lcd_display).update();
+
+  - platform: template
+    name: "LCD Fixed Page3"
+    icon: mdi:page-next
+    on_press:
+      then:
+        - lambda: |-
+            id(fixed_page) = 3;
+            id(display_page) = 3;
+            id(lcd_display).update();
+
+  - platform: template
+    name: "LCD Fixed Page4"
+    icon: mdi:page-last
+    on_press:
+      then:
+        - lambda: |-
+            id(fixed_page) = 4;
+            id(display_page) = 4;
+            id(lcd_display).update();
+
+  # 新增：背光控制按钮（D4/GPIO2）
+  - platform: template
+    name: "LCD Backlight On"
+    icon: mdi:lightbulb-on
+    on_press:
+      then:
+        - lambda: |-
+            id(backlight_pin).turn_on();
+            id(backlight_state) = true;
+
+  - platform: template
+    name: "LCD Backlight Off"
+    icon: mdi:lightbulb-off
+    on_press:
+      then:
+        - lambda: |-
+            id(backlight_pin).turn_off();
+            id(backlight_state) = false;
+
+  # 基础功能
+  - platform: restart
+    name: "LCD Restart"
+    icon: mdi:restart-alert
+
+  - platform: template
+    name: "LCD Refresh Display"
+    icon: mdi:refresh
+    on_press:
+      then:
+        - component.update: lcd_display
+
+# =========================
+# 开关组件（修复restore_state报错 + GPIO调用错误）
+# =========================
+switch:
+  - platform: template
+    name: "LCD Backlight"
+    id: backlight_switch
+    icon: mdi:lightbulb
+    # 替换restore_state为restore_mode，兼容新版本ESPHome
+    restore_mode: RESTORE_DEFAULT_ON # 恢复上次状态，默认打开
+    optimistic: true
+    turn_on_action:
+      - lambda: |-
+          id(backlight_pin).turn_on();
+          id(backlight_state) = true;
+    turn_off_action:
+      - lambda: |-
+          id(backlight_pin).turn_off();
+          id(backlight_state) = false;
+
+# 页面切换定时器
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(fixed_page) == -1) {
+            id(switch_timer)++;
+            if (id(switch_timer) >= id(switch_seconds)) {
+              id(display_page) = (id(display_page) + 1) % 5;  // 修改为5个页面循环
+              id(switch_timer) = 0;
+            }
+          }
+
+  # 新增：每小时合并一次 uptime 到累计基数
+  - interval: 1h
+    then:
+      - lambda: |-
+          float current_uptime = id(uptime_sec).state;
+          float last = id(last_merged_uptime);
+          float delta = current_uptime - last;
+          if (delta > 0) {
+            id(total_uptime_base) += delta;
+            id(last_merged_uptime) = current_uptime;
+          }
+
+# LCD显示逻辑（PCF8574T驱动，D4控制背光）
+display:
+  - platform: lcd_pcf8574
+    id: lcd_display
+    dimensions: 16x2
+    address: 0x27 # PCF8574T默认地址，可根据实际修改
+    update_interval: 1s
+    lambda: |-
+      // 定义显示实体的函数（内部lambda函数）
+      auto print_entity = [&](int line, int pos, int entity_id) {
+        // 提前定义time变量，避免switch-case交叉初始化问题
+        esphome::ESPTime time;
+        
+        switch (entity_id) {
+          case 0: // 今日电量
+            if (id(elec_today).has_state()) {
+              it.printf(pos, line, "Elec: %.2f kWh", id(elec_today).state);
+            } else {
+              it.print(pos, line, "Elec: N/A");
+            }
+            break;
+          case 1: // 今日燃气
+            if (id(gas_today).has_state()) {
+              it.printf(pos, line, "Gas : %.2f m3", id(gas_today).state);
+            } else {
+              it.print(pos, line, "Gas: N/A");
+            }
+            break;
+          case 2: // 当前功率
+            if (id(power_now).has_state()) {
+              it.printf(pos, line, "Power: %d W", (int)id(power_now).state);
+            } else {
+              it.print(pos, line, "Power: N/A");
+            }
+            break;
+          case 3: // WiFi质量
+            if (id(wifi_quality).has_state()) {
+              it.printf(pos, line, "WiFi: %.0f %%", id(wifi_quality).state);
+            } else {
+              it.print(pos, line, "WiFi: N/A");
+            }
+            break;
+          case 4: // WiFi信号
+            if (id(wifi_rssi).has_state()) {
+              it.printf(pos, line, "RSSI: %d dBm", (int)id(wifi_rssi).state);
+            } else {
+              it.print(pos, line, "RSSI: N/A");
+            }
+            break;
+          case 5: // 剩余内存
+            if (id(free_memory).has_state()) {
+              it.printf(pos, line, "Mem_free: %.0f KB", id(free_memory).state);
+            } else {
+              it.print(pos, line, "Mem: N/A");
+            }
+            break;
+          case 6: // 内存占用
+            if (id(memory_usage).has_state()) {
+              it.printf(pos, line, "MemUse: %.0f %%", id(memory_usage).state);
+            } else {
+              it.print(pos, line, "MemUse: N/A");
+            }
+            break;
+          case 7: // 设备运行时间
+            if (id(uptime_human).has_state()) {
+              it.printf(pos, line, "Uptime: %.1f h", id(uptime_human).state);
+            } else {
+              it.print(pos, line, "Uptime: N/A");
+            }
+            break;
+          case 8: // 重启次数
+            if (id(restart_count_sensor).has_state()) {
+              it.printf(pos, line, "Restart: %d", (int)id(restart_count_sensor).state);
+            } else {
+              it.print(pos, line, "Restart: N/A");
+            }
+            break;
+          case 9: // Pi运行时间
+            if (id(pi_uptime).has_state()) {
+              it.printf(pos, line, "Pi Uptime: %d d", (int)id(pi_uptime).state);
+            } else {
+              it.print(pos, line, "Pi: N/A");
+            }
+            break;
+          case 10: // DNS查询数
+            if (id(dns_queries).has_state()) {
+              it.printf(pos, line, "DNS : %d", (int)id(dns_queries).state);
+            } else {
+              it.print(pos, line, "DNS: N/A");
+            }
+            break;
+          case 11: // DNS拦截数
+            if (id(dns_blocked).has_state()) {
+              it.printf(pos, line, "DNSBlock: %d", (int)id(dns_blocked).state);
+            } else {
+              it.print(pos, line, "DNSBlock: N/A");
+            }
+            break;
+          case 12: // 系统时间
+            time = id(ha_time).now();
+            if (time.is_valid()) {
+              it.strftime(pos, line, "Time: %H:%M:%S", time);
+            } else {
+              it.print(pos, line, "Time: N/A");
+            }
+            break;
+          case 13: // 拓竹剩余时间
+            if (id(bambu_remaining_time).has_state()) {
+              int mins = (int)id(bambu_remaining_time).state;
+              int hours = mins / 60;
+              mins = mins % 60;
+              it.printf(pos, line, "Bambu: %dh%dm", hours, mins);
+            } else {
+              it.print(pos, line, "Bambu: N/A");
+            }
+            break;
+          case 14: // 拓竹总使用时间（修改：直接使用小时单位）
+            if (id(bambu_total_usage).has_state()) {
+              float hours = id(bambu_total_usage).state;
+              it.printf(pos, line, "BambuTotal: %.0f h", hours);
+            } else {
+              it.print(pos, line, "BambuTotal: N/A");
+            }
+            break;
+          case 15: // 拓竹打印进度
+            if (id(bambu_print_progress).has_state()) {
+              it.printf(pos, line, "BambuProg: %.0f %%", id(bambu_print_progress).state);
+            } else {
+              it.print(pos, line, "BambuProg: N/A");
+            }
+            break;
+
+          case 16: // 温度
+            if (id(temperature).has_state()) {
+              it.printf(pos, line, "Temp: %.1f C", id(temperature).state);
+            } else {
+              it.print(pos, line, "Temp: N/A");
+            }
+            break;
+          case 17: // 湿度
+            if (id(humidity).has_state()) {
+              it.printf(pos, line, "Humi: %.0f %%", id(humidity).state);
+            } else {
+              it.print(pos, line, "Humi: N/A");
+            }
+            break;
+          case 18: // 甲醛浓度
+            if (id(hcho_density).has_state()) {
+              it.printf(pos, line, "HCHO: %.3f mg/m3", id(hcho_density).state);
+            } else {
+              it.print(pos, line, "HCHO: N/A");
+            }
+            break;
+
+          case 19: // ES6剩余电量
+            if (id(es6_soc).has_state()) {
+              it.printf(pos, line, "ES6 SOC: %.0f %%", id(es6_soc).state);
+            } else {
+              it.print(pos, line, "ES6 SOC: N/A");
+            }
+            break;
+          case 20: // ES6实估续航
+            if (id(es6_remaining_range).has_state()) {
+              it.printf(pos, line, "ES6 Range: %dkm", (int)id(es6_remaining_range).state);
+            } else {
+              it.print(pos, line, "ES6 Range: N/A");
+            }
+            break;
+          case 21: // ES6累计里程
+            if (id(es6_mileage).has_state()) {
+              it.printf(pos, line, "ES6 Mile:%dkm", (int)id(es6_mileage).state);
+            } else {
+              it.print(pos, line, "ES6 Mile: N/A");
+            }
+            break;
+
+          case 22: // 路由器下载速度
+            if (id(router_download).has_state()) {
+              it.printf(pos, line, "DL: %.0f kbit/s", id(router_download).state);
+            } else {
+              it.print(pos, line, "DL: N/A");
+            }
+            break;
+          case 23: // 路由器上传速度
+            if (id(router_upload).has_state()) {
+              it.printf(pos, line, "UL: %.0f kbit/s", id(router_upload).state);
+            } else {
+              it.print(pos, line, "UL: N/A");
+            }
+            break;
+          default:
+            it.print(pos, line, "N/A");
+        }
+      };
+
+      // 确定当前显示页面
+      int page = id(display_page);
+      if (id(fixed_page) >= 0) {
+        page = id(fixed_page);
+      }
+
+      // 清空屏幕
+      it.clear();
+
+      // Page0显示
+      if (page == 0) {
+        print_entity(0, 0, id(p0l0_selected));
+        print_entity(1, 0, id(p0l1_selected));
+      }
+      // Page1显示
+      else if (page == 1) {
+        print_entity(0, 0, id(p1l0_selected));
+        print_entity(1, 0, id(p1l1_selected));
+      }
+      // Page2显示
+      else if (page == 2) {
+        print_entity(0, 0, id(p2l0_selected));
+        print_entity(1, 0, id(p2l1_selected));
+      }
+      // Page3显示（新增）
+      else if (page == 3) {
+        print_entity(0, 0, id(p3l0_selected));
+        print_entity(1, 0, id(p3l1_selected));
+      }
+      // Page4显示（新增）
+      else if (page == 4) {
+        print_entity(0, 0, id(p4l0_selected));
+        print_entity(1, 0, id(p4l1_selected));
+      }
