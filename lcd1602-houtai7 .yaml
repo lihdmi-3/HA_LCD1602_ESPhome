@@ -1205,12 +1205,13 @@ display:
               it.print(pos, line, "Time: N/A");
             }
             break;
-          case 13: // 拓竹剩余时间
+          case 13: // 拓竹剩余时间（传感器返回小时，浮点数）
             if (id(bambu_remaining_time).has_state()) {
-              int mins = (int)id(bambu_remaining_time).state;
-              int hours = mins / 60;
-              mins = mins % 60;
-              it.printf(pos, line, "Bambu: %dh%dm", hours, mins);
+              float hours_float = id(bambu_remaining_time).state;           // 例如 1.5 小时
+              int total_minutes = (int)(hours_float * 60);                  // 转换为总分钟（向下取整）
+              int hours = total_minutes / 60;
+              int minutes = total_minutes % 60;
+              it.printf(pos, line, "Bambu: %dh%dm", hours, minutes);
             } else {
               it.print(pos, line, "Bambu: N/A");
             }
