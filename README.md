@@ -1,0 +1,2 @@
+# HA_LCD1602_ESPhome
+使用LCD1602显示homeassistant中的实体，带有后台功能
